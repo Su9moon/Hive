@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
 it.each(['disconnected', 'duplicate'] as const)('sends only after explicit ordinary tab selection and retains attributed reply history (%s)', async scenario => {
-  document.documentElement.innerHTML = readFileSync(new URL('../src/sidepanel.html', import.meta.url), 'utf8');
+  document.documentElement.innerHTML = readFileSync(resolve(process.cwd(), 'src/sidepanel.html'), 'utf8');
   const tab = { tabId: 42, windowId: 1, active: true, binding: { role: '', project: '', notes: '' },
     snapshot: { conversationKey: 'conversation:ordinary', title: 'Ordinary chat', status: 'idle', confidence: 'direct',
       latestAssistantText: 'reply for ordinary', observedAt: Date.now() },
@@ -28,22 +29,22 @@ it.each(['disconnected', 'duplicate'] as const)('sends only after explicit ordin
   });
   vi.stubGlobal('chrome', { runtime: { sendMessage, onMessage: { addListener: vi.fn() } } });
   await import('../src/sidepanel');
-  await vi.waitFor(() => expect(document.querySelector('#agents details input')).not.toBeNull());
+  await vi.waitFor(() => expect(document.querySelector('#agents details input.agent-select')).not.toBeNull());
   if (scenario === 'duplicate') {
-    await vi.waitFor(() => expect(document.querySelectorAll('#agents > section input')).toHaveLength(1));
-    expect(document.querySelectorAll('#agents details input')).toHaveLength(1);
+    await vi.waitFor(() => expect(document.querySelectorAll('#agents > section input.agent-select')).toHaveLength(1));
+    expect(document.querySelectorAll('#agents details input.agent-select')).toHaveLength(1);
   }
   expect(sendMessage.mock.calls.some(([message]) => message.type === 'manager:send')).toBe(false);
   document.getElementById('select-idle')!.click();
-  expect((document.querySelector('#agents details input') as HTMLInputElement).checked).toBe(false);
+  expect((document.querySelector('#agents details input.agent-select') as HTMLInputElement).checked).toBe(false);
   if (scenario === 'duplicate') {
-    expect((document.querySelector('#agents > section input') as HTMLInputElement).checked).toBe(true);
+    expect((document.querySelector('#agents > section input.agent-select') as HTMLInputElement).checked).toBe(true);
     document.getElementById('clear-selection')!.click();
   }
   const ordinary = document.querySelector('#agents details') as HTMLDetailsElement;
   expect(ordinary.open).toBe(false);
   ordinary.open = true;
-  (ordinary.querySelector('input') as HTMLInputElement).click();
+  (ordinary.querySelector('input.agent-select') as HTMLInputElement).click();
   (document.getElementById('instruction') as HTMLTextAreaElement).value = 'explicit ordinary instruction';
   document.getElementById('send-selected')!.click();
   await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledWith({ type: 'manager:send', tabIds: [42], text: 'explicit ordinary instruction' }));
