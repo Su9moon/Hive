@@ -14,7 +14,7 @@
 
 ## R2 最小源码实现（默认关闭，未联合验证）
 
-`RpcRouter` 的可选第五个构造参数为主机专用
+`RpcRouter` 的可选第七个构造参数（前六项保留 Radar/现有接口兼容）为主机专用
 `{ enabled: true, clientId, project }`。现有启动入口不传此参数，因此默认禁用。
 TODO：由部署主机提供受信配置及管理员凭据隔离；尚未接线，不代表 live integration。
 仅管理员 token 可调用 `cb-dispatch.prepare` / `cb-dispatch.lookup`，浏览器 token 和
@@ -111,3 +111,10 @@ even if a transport ignores cancellation. Connection/operation failures and dead
 use the same automatic cleanup path. A genuine SDK transport must honor cancellation
 and release its resources in close. gamd is still NOT wired; default disabled, no
 polling/retry/scheduler or real MCP SDK/live connectivity is added.
+
+
+## Hive06 H4 source-port status (2026-11-06)
+
+PR #12 的 `CharterionCbDispatchJournal`、`CharterionCbDispatchRpc`、`CharterionCbHostReader`、`CharterionCbReconciler` 和 evidence projector 已按精确 blob 定向接续到 Hive06 隔离分支；Router 已保留现有 Radar 参数和默认关闭语义，仅额外允许受信宿主在第七参数显式绑定 CB project/client。管理员可以准备/查询本地意图，浏览器 token 无权限；该操作**不会调用 CB**。
+
+真实 MCP SDK Streamable HTTP、凭据加载/Provider、CB submit_task/result package 和 Chrome/CB 联合验收仍是 **NOT_RUN / NOT_WIRED**，不能把本地 journal 或 fake-reader 测试当作真实 CB 成功。不得在正式 Kernel 上导入未验收源码。

@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import type { ControlPlane } from './controlPlane';
 import { OrganizationRpcController } from './organizationRpc';
 import { JointRoleCharterAuthority, JOINT_ROLE_CHARTER_CONTENT } from './jointRoleCharter';
+import { CharterionCbDispatchRpc, type CbDispatchAdminBinding } from './charterionCbDispatchRpc';
 import { enumParam, numberParam, objectArrayParam, objectParam, record, stringParam } from './rpcParams';
 import type {
   AcquireLeaseInput,
@@ -56,12 +57,17 @@ function failure(id: string, code: string, message: string): RpcFailure {
 
 export class RpcRouter {
   private readonly organizationRpc: OrganizationRpcController;
+  private readonly cbDispatchRpc: CharterionCbDispatchRpc;
   constructor(
     private readonly plane: ControlPlane,
     private readonly adminToken: string,
     private readonly browserToken: string,
     private readonly instanceId?: string,
+    cbBinding?: CbDispatchAdminBinding,
   ) {
+    // Only a trusted daemon constructor may provide the host-bound client/project.
+    // Browser RPC cannot provision or mutate the binding.
+    this.cbDispatchRpc = new CharterionCbDispatchRpc(plane.database, cbBinding);
     this.organizationRpc = new OrganizationRpcController(plane, {
       requireAdmin: (request) => this.requireAdmin(request),
       requireBrowserOrAdmin: (request) => this.requireBrowserOrAdmin(request),
@@ -126,6 +132,10 @@ export class RpcRouter {
   private dispatch(request: RpcRequest): unknown {
     const params = request.params ? record(request.params) : {};
     switch (request.method) {
+      case 'cb-dispatch.prepare':
+      case 'cb-dispatch.lookup':
+        this.requireAdmin(request);
+        return this.cbDispatchRpc.handle(request.method, params);
       case 'role-charter.import-approved': {
         // Existing operator/admin RPC authority, not browser prompts or a client-supplied APPROVED flag.
         this.requireAdmin(request);

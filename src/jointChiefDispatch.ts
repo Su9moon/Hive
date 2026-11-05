@@ -30,7 +30,10 @@ function exactRecord(value: unknown, expected: readonly string[]): Record<string
 export function parseChiefDirective(text: string): ChiefDirective | null {
   if (!text.startsWith(DISPATCH_PREFIX)) return null;
   if (text.length > 16000) throw new Error('Chief dispatch envelope too large');
-  const record = exactRecord(JSON.parse(text.slice(DISPATCH_PREFIX.length)), ['dispatchId', 'targetIdentity', 'instruction']);
+  let decoded: unknown;
+  try { decoded = JSON.parse(text.slice(DISPATCH_PREFIX.length)); }
+  catch { throw new Error('Chief dispatch JSON invalid'); }
+  const record = exactRecord(decoded, ['dispatchId', 'targetIdentity', 'instruction']);
   if (typeof record.dispatchId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(record.dispatchId)
       || (record.targetIdentity !== 'hive-developer' && record.targetIdentity !== 'cb-developer')
       || typeof record.instruction !== 'string' || !record.instruction.trim() || record.instruction.length > 12000) {
@@ -43,7 +46,10 @@ export function parseChiefDirective(text: string): ChiefDirective | null {
 export function parseDeveloperResult(text: string, expectedDispatchId: string): DeveloperResult | null {
   if (!text.startsWith(RESULT_PREFIX)) return null;
   if (text.length > 10000) throw new Error('Developer result envelope too large');
-  const record = exactRecord(JSON.parse(text.slice(RESULT_PREFIX.length)), ['dispatchId', 'status', 'summary', 'evidence']);
+  let decoded: unknown;
+  try { decoded = JSON.parse(text.slice(RESULT_PREFIX.length)); }
+  catch { throw new Error('Developer result JSON invalid'); }
+  const record = exactRecord(decoded, ['dispatchId', 'status', 'summary', 'evidence']);
   if (record.dispatchId !== expectedDispatchId ||
     !['acknowledged', 'completed', 'blocked'].includes(String(record.status)) ||
     typeof record.summary !== 'string' || !record.summary.trim() || record.summary.length > 6000 ||
@@ -68,7 +74,8 @@ export function buildVerifiedChiefDispatch(
   const charter = snapshot.roleCharter;
   const group = snapshot.projectGroups?.find(item => item.id === charter?.groupId);
   if (!charter || !group || group.leadRole !== 'chief_engineer' ||
-      charter.roles.find(role => role.role === 'chief_engineer')?.conversationKey !== group.leadConversationKey ||
+      !charter.roles.some(role => role.role === 'chief_engineer' &&
+        role.identity === group.leadIdentity && role.conversationKey === group.leadConversationKey) ||
       observed.conversationKey !== group.leadConversationKey || observed.status !== 'idle' ||
       !observed.latestAssistantMessageId) {
     throw new Error('PENDING_CHIEF_RUNTIME: no verified effective Chief conversation');
@@ -123,7 +130,8 @@ export function findVerifiedChiefTab(
 ): ManagedTab | undefined {
   const group = snapshot.projectGroups?.find(item => item.id === snapshot.roleCharter?.groupId);
   if (!group || !snapshot.roleCharter?.roles.some(role =>
-    role.role === 'chief_engineer' && role.conversationKey === group.leadConversationKey)) return undefined;
+    role.role === 'chief_engineer' && role.identity === group.leadIdentity &&
+    role.conversationKey === group.leadConversationKey)) return undefined;
   const candidates = tabs.filter(tab => {
     if (tab.snapshot.status !== 'idle' || tab.snapshot.conversationKey !== group.leadConversationKey) return false;
     const leases = snapshot.leases.filter(lease =>
@@ -149,7 +157,8 @@ export function buildChiefResultMessage(
   const charter = snapshot.roleCharter;
   const group = snapshot.projectGroups?.find(item => item.id === charter?.groupId);
   if (!charter || !group || !charter.roles.some(role =>
-    role.role === 'chief_engineer' && role.conversationKey === group.leadConversationKey)) {
+    role.role === 'chief_engineer' && role.identity === group.leadIdentity &&
+    role.conversationKey === group.leadConversationKey)) {
     throw new Error('Chief result recipient authority unavailable');
   }
   const content = [
