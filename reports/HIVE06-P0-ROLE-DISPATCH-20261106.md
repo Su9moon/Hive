@@ -60,3 +60,35 @@ Record each command's **actual** exit code; stop on errors and report precise fa
 | `HIVE06_CHIEF_DEVELOPER_DISPATCH_E2E_PASS` | **NOT_RUN** |
 
 This review is limited to source facts and committed test definitions, with no CI/Windows execution claimed.
+
+---
+
+## 2026-11-06 continuation — durable source safety fix and exact-blob smoke evidence
+
+Commit `06c6ec5b23d810f4ca5ec60bed49309ba2bb8edb` on PR #23 repairs two restored-message trust boundaries:
+
+1. `roleCharterDelivery.ts` validates the *whole* immutable role-charter delivery envelope, not just text and target Conversation. An imported, altered manager message with different project, fromRole, type, target role/kind, or taskId is refused.
+2. `jointChiefDispatch.ts` adds `assertCorrelatedDeveloperReturn`: the original frozen Chief work message must own an exact `reply-observed` SendAttempt from the expected Developer Conversation. The recorded structured Developer reply must independently regenerate the frozen Chief-result message, or forwarding is rejected. `background.ts` verifies those correlations before persistence and again before return delivery. Result evidence remains **Developer-reported and unverified**, not a CB/Git acceptance receipt.
+
+### Tests actually run (isolated local Node, no Chrome/Kernel)
+
+The checked source files were manually materialized and compared against their **exact committed Git blobs** with `git hash-object`:
+
+| Source | Git blob verified | Strict TypeScript check | Custom Node smoke tests |
+|---|---|---|---|
+| `src/roleCharterDelivery.ts` | `ed8084c8cd423eb0cb237abff3ad8ffe59ff5be5` | PASS | 6/6 PASS |
+| `src/jointChiefDispatch.ts` | `247bb766f76ef602ce39fc14b34f2b78b3c9d589` | PASS | 11/11 PASS |
+| `control/src/charterionCbResultClassifier.ts` | `73d837f10d835173963c12bb98f30d0f8e9bdf08` | PASS | 6/6 PASS |
+| **Total** | **3 exact source blobs** | **3 standalone checks PASS** | **23/23 PASS** |
+
+Toolchain: Node.js 22.16.0, TypeScript 5.8.3. Typechecking used minimal isolated dependency type stubs with the repo's strictness flags (`strict`, `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`), not its full dependency graph. Smoke checks were custom `node --experimental-strip-types --test` suites rather than the committed Vitest files. **Do not label H1_BUILD_TEST_PASS or H3 real browser E2E from these results**.
+
+### Concrete H3 blocker beyond tests: Chief browser occupancy
+
+Existing `control/src/browserAuthority.ts` only provides `ensureOccupancy(slot: AgentSlot, ...)`, leasing a browser tab *to an AgentSlot*. The approved project-group Chief is **not** an AgentSlot; `control/src/controlPlane.ts` returns `projectGroups.browserRuntime: NOT_VERIFIED`. There is no proven group-lead Chief browser admission, identity attestation and lease issuance path in the currently integrated Kernel.
+
+Consequently, the H3 source's intentionally strict requirement for a current `browser-tab:gam-default:<tabId>` exclusive Lease held by the existing `joint-chief` identity cannot currently be satisfied through the ordinary Developer fleet path. Do not create a third Developer Slot, substitute an ordinary tab, insert a Lease directly with SQL, or treat a model `fromRole` string as proof. **H3 real dispatch is BLOCKED on an explicit trusted Chief browser admission/observability path**, which still needs isolated implementation, security review and operator-controlled UAT within the fixed PCP role organization. This is a code/authority integration gap, not merely a missing tester click.
+
+### Still NOT_RUN
+
+Full repo `npm ci`, `npm run verify`, control/native host build, Windows native smoke, V31 isolated migration test on the new combination, actual managed Role Charter initialization/restart/rollover, actual Chief→Developer→Chief Chrome Dev send and receipt, genuine authenticated MCP SDK transport and CB task/result-package E2E. GitHub Actions REST listed **zero workflow runs** for this repo at review time; no CI result is available. No production Chrome Dev Default, Kernel DB, registry, live CB tasks or Provider settings were modified.
