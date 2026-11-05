@@ -109,3 +109,18 @@ it('rejects a preexisting snapshot with a forged digest instead of ignoring the 
     expect(db.db.prepare('SELECT * FROM role_charter_bindings').all()).toHaveLength(0);
   } finally { db.close(); }
 });
+
+it('exposes only an imported, complete Kernel charter projection (never the source APPROVED flag)', () => {
+  const db = new ControlDatabase(':memory:');
+  try {
+    seed(db);
+    const authority = new JointRoleCharterAuthority(db);
+    expect(authority.snapshot()).toBeUndefined();
+    authority.importApproved(content, sources);
+    const projection = authority.snapshot();
+    expect(projection?.digest).toBe(digest);
+    expect(projection?.roles.map(role => role.identity)).toEqual(['joint-chief', 'hive-developer', 'cb-developer']);
+    expect(projection?.roles.filter(role => role.slotId !== null)).toHaveLength(2);
+    expect(projection?.content).toBe(content);
+  } finally { db.close(); }
+});

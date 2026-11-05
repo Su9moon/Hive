@@ -3,6 +3,7 @@ import type { ControlPlane } from './controlPlane';
 import type { RpcFailure, RpcRequest, RpcResponse } from './contracts';
 import { enumParam, numberParam, objectArrayParam, objectParam, record, stringParam } from './rpcParams';
 import { RpcRouter as LegacyRpcRouter } from './rpcLegacy';
+import type { CbDispatchAdminBinding } from './charterionCbDispatchRpc';
 import { RadarControlError, type RadarControlGrant } from './radarControl';
 
 export * from './rpcLegacy';
@@ -27,8 +28,9 @@ export class RpcRouter {
     private readonly instanceId?: string,
     private readonly radarUrl?: () => string | undefined,
     private readonly radarControlGrant?: (projectId: string, actor: string) => RadarControlGrant,
+    cbBinding?: CbDispatchAdminBinding,
   ) {
-    this.legacy = new LegacyRpcRouter(plane, adminToken, browserToken, instanceId);
+    this.legacy = new LegacyRpcRouter(plane, adminToken, browserToken, instanceId, cbBinding);
   }
 
   handle(request: RpcRequest): RpcResponse {

@@ -127,7 +127,7 @@ export class JointRoleCharterAuthority {
       roleCharterDigest(sourceContents[index] ?? '') !== source.sha256)) throw new Error('Source content SHA256 mismatch');
     return this.database.transaction(() => {
       const group = this.database.db.prepare('SELECT * FROM project_groups WHERE id=?').get(JOINT_ROLE_CHARTER.groupId);
-      if (!group || group.lead_conversation_key !== JOINT_ROLE_CHARTER.roles[0].conversationKey) throw new Error('Group Chief identity mismatch');
+      if (!group || group.lead_identity !== JOINT_ROLE_CHARTER.roles[0].identity || group.lead_conversation_key !== JOINT_ROLE_CHARTER.roles[0].conversationKey) throw new Error('Group Chief identity mismatch');
       const members = this.database.db.prepare('SELECT * FROM project_group_members WHERE group_id=?').all(JOINT_ROLE_CHARTER.groupId);
       if (members.length !== 2) throw new Error('Expected exactly two Developer bindings');
       for (const role of JOINT_ROLE_CHARTER.roles.slice(1)) {
@@ -148,6 +148,29 @@ export class JointRoleCharterAuthority {
       }
       return JOINT_ROLE_CHARTER_DIGEST;
     });
+  }
+
+  /**
+   * Only the Kernel's already-imported, immutable effective charter is exported.
+   * The literal APPROVED field in source never activates a contract by itself.
+   * Browser clients cannot perform the privileged import.
+   */
+  snapshot(): {
+    version: string; digest: string; groupId: string; content: string;
+    roles: { identity: string; role: string; projectId: string | null; slotId: string | null; conversationKey: string }[];
+  } | undefined {
+    const content = this.read();
+    if (content === undefined) return undefined;
+    return {
+      version: JOINT_ROLE_CHARTER.version,
+      digest: JOINT_ROLE_CHARTER_DIGEST,
+      groupId: JOINT_ROLE_CHARTER.groupId,
+      content,
+      roles: JOINT_ROLE_CHARTER.roles.map(role => ({
+        identity: role.identity, role: role.role, projectId: role.projectId,
+        slotId: role.slotId, conversationKey: role.conversationKey,
+      })),
+    };
   }
 
   read(): string | undefined {
