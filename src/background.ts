@@ -380,10 +380,19 @@ async function freezeMessageRecipients(
   });
 }
 
-async function dispatchMessage(messageId: string): Promise<SendResult[]> {
+async function dispatchMessage(messageId: string, trustedChannel?: 'charter' | 'chief'): Promise<SendResult[]> {
   let state = await workState();
   let message = state.messages.find((item) => item.id === messageId);
   if (!message) throw new Error(`Message ${messageId} does not exist`);
+  // Normal manager/sidebar sends cannot replay or forge the protected roles
+  // through an imported manager state document. Trusted callers must independently
+  // re-check the Kernel charter and the live browser lease before this method.
+  if (message.id.startsWith('role-charter:') && trustedChannel !== 'charter') {
+    throw new Error('Role Charter delivery requires Kernel-approved authorization');
+  }
+  if ((message.id.startsWith('chief-dispatch:') || message.id.startsWith('chief-result:')) && trustedChannel !== 'chief') {
+    throw new Error('Chief message delivery requires verified Chief provenance');
+  }
   let tabs = await managedTabs(state.attempts);
   let plan = planMessageDispatch(message, state.attempts, tabs);
   if (plan.error) throw new Error(plan.error);
@@ -641,7 +650,7 @@ async function deliverJointRoleCharters(
     return eligible;
   });
   for (const id of dispatchIds) {
-    try { await dispatchMessage(id); }
+    try { await dispatchMessage(id, 'charter'); }
     catch (error) {
       await reportIncident('role-charter-dispatch-blocked', id, {
         reason: error instanceof Error ? error.message : String(error),
@@ -670,6 +679,11 @@ async function deliverPendingChiefWork(
   tabs: readonly ManagedTab[],
 ): Promise<void> {
   const targets = planJointRoleCharterTargets(snapshot, tabs, Date.now()).filter(target => target.reason === 'READY');
+  // An imported/replayed manager message ID is not proof of Chief authorization.
+  // Require the actual, current Chief assistant directive and the original
+  // Kernel-owned group Lease before dispatching anything from a persisted record.
+  const chief = findVerifiedChiefTab(snapshot, tabs, Date.now());
+  if (!chief || !chief.snapshot.latestAssistantText.startsWith('HIVE06_CHIEF_DISPATCH_V1\n')) return;
   const state = await workState();
   for (const message of state.messages) {
     if (!message.id.startsWith('chief-dispatch:') || message.attemptIds.length !== 0 ||
@@ -678,8 +692,13 @@ async function deliverPendingChiefWork(
     if (destination?.length !== 1 ||
         !targets.some(target => target.recipient.conversationKey === destination[0] &&
           target.recipient.project === message.project)) continue;
-    try { await dispatchMessage(message.id); }
-    catch (error) {
+    try {
+      const directive = parseChiefDirective(chief.snapshot.latestAssistantText);
+      if (!directive || directive.dispatchId !== message.taskId) continue;
+      const authorized = buildVerifiedChiefDispatch(directive, chief.tabId, chief.snapshot, snapshot, Date.now());
+      assertSameFrozenMessage(message, authorized);
+      await dispatchMessage(message.id, 'chief');
+    } catch (error) {
       await reportIncident('chief-work-delivery-blocked', message.id, {
         reason: error instanceof Error ? error.message : String(error),
       });
