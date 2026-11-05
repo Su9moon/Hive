@@ -164,9 +164,9 @@ export function buildChiefResultMessage(
   const content = [
     'HIVE06_DEVELOPER_RESULT_V1',
     `Dispatch ID: ${result.dispatchId}`,
-    `Status: ${result.status}`,
+    `Developer-reported status (not independently verified): ${result.status}`,
     'Summary:', result.summary,
-    'Evidence:', ...result.evidence,
+    'Developer-reported evidence (requires Git/CB verification):', ...result.evidence,
   ].join('\n');
   return {
     id: `chief-result:${result.dispatchId}:${result.status === 'acknowledged' ? 'ack' : 'final'}`,

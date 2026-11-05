@@ -25,3 +25,8 @@ it('rejects cross-task contamination and does not silently upgrade absent fields
     gitDeliveryStatus: 'unknown', resultDeliveryStatus: 'unknown', verification: 'NOT_VERIFIED',
   });
 });
+
+it('preserves transport timeout without inventing business or test outcomes', () => {
+  expect(projectCbResultDimensions({ id: 'T-000501', status: 'timeout' }, 'T-000501'))
+    .toMatchObject({ taskStatus: 'timeout', businessStatus: 'unknown', testsStatus: 'unknown' });
+});

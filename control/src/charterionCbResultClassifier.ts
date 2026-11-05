@@ -5,7 +5,7 @@
  */
 export interface CbResultDimensions {
   taskId: string;
-  taskStatus: 'pending' | 'running' | 'done' | 'failed' | 'unknown';
+  taskStatus: 'pending' | 'running' | 'done' | 'failed' | 'timeout' | 'unknown';
   businessStatus: 'success' | 'failed' | 'partial' | 'blocked' | 'unknown';
   testsStatus: 'passed' | 'failed' | 'not_run' | 'unknown';
   gitDeliveryStatus: 'published' | 'blocked' | 'partial' | 'not_run' | 'unknown';
@@ -26,7 +26,7 @@ export function projectCbResultDimensions(value: unknown, expectedTaskId: string
   const digest = row.result_package_sha256;
   return {
     taskId: expectedTaskId,
-    taskStatus: enumValue(row.status, ['pending', 'running', 'done', 'failed'] as const, 'unknown'),
+    taskStatus: enumValue(row.status, ['pending', 'running', 'done', 'failed', 'timeout'] as const, 'unknown'),
     businessStatus: enumValue(row.business_status, ['success', 'failed', 'partial', 'blocked'] as const, 'unknown'),
     testsStatus: enumValue(row.tests_status, ['passed', 'failed', 'not_run'] as const, 'unknown'),
     gitDeliveryStatus: enumValue(row.git_delivery_status, ['published', 'blocked', 'partial', 'not_run'] as const, 'unknown'),
