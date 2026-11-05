@@ -27,7 +27,20 @@ export function planRoleCharterInitialization(
   }
   const id = `role-charter:${JSON.stringify([recipient.identity, recipient.conversationKey, recipient.version, recipient.digest])}`;
   const previous = messages.find(message => message.id === id);
-  if (previous && (previous.content !== recipient.content || previous.recipientConversationKeys?.length !== 1 || previous.recipientConversationKeys[0] !== recipient.conversationKey)) {
+  // The manager message ledger can be restored or imported. The whole immutable
+  // delivery envelope must match the privileged Kernel charter, not just its
+  // visible prompt and Conversation ID.
+  if (previous && (
+    previous.project !== recipient.project ||
+    previous.fromRole !== 'role-charter' ||
+    previous.type !== 'announcement' ||
+    previous.target.kind !== 'role' ||
+    previous.target.role !== recipient.role ||
+    previous.taskId !== undefined ||
+    previous.content !== recipient.content ||
+    previous.recipientConversationKeys?.length !== 1 ||
+    previous.recipientConversationKeys[0] !== recipient.conversationKey
+  )) {
     throw new Error('Role charter message tampering');
   }
   const history = attempts.filter(attempt => attempt.messageId === id || previous?.attemptIds.includes(attempt.attemptId));

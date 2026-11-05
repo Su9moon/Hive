@@ -21,3 +21,17 @@ it('never blindly retries consumed, failed or uncertain attempts, including orph
     expect(plan(recipient, [], [attempt], runtime, 3)).toEqual({ state: expected });
   }
 });
+
+it('rejects forged restored delivery envelopes even when text and frozen recipient match', () => {
+  const original = plan(recipient, [], [], runtime, 1).message!;
+  for (const forged of [
+    { ...original, fromRole: 'chief_engineer' },
+    { ...original, project: 'another-project' },
+    { ...original, type: 'result' as const },
+    { ...original, target: { kind: 'role' as const, role: 'developer' } },
+    { ...original, target: { kind: 'project' as const } },
+    { ...original, taskId: 'untrusted-work' },
+  ]) {
+    expect(() => plan(recipient, [forged], [], runtime, 2)).toThrow(/tampering/);
+  }
+});

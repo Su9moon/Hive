@@ -1,4 +1,4 @@
-import type { AgentMessage, ChatSnapshot, ManagedTab } from './contracts';
+import type { AgentMessage, ChatSnapshot, ManagedTab, SendAttemptRecord } from './contracts';
 import type { NativeControlSnapshot } from './nativeControlLegacy';
 
 const DISPATCH_PREFIX = 'HIVE06_CHIEF_DISPATCH_V1\n';
@@ -175,6 +175,47 @@ export function buildChiefResultMessage(
     attemptIds: [], recipientConversationKeys: [group.leadConversationKey],
     createdAt: now, updatedAt: now,
   };
+}
+
+/**
+ * Before forwarding a persisted Chief-return record, independently rederive it
+ * from a real reply-observed Attempt attached to the original frozen dispatch.
+ * An imported or orphaned manager message is not proof of Developer execution.
+ */
+export function assertCorrelatedDeveloperReturn(
+  proposed: AgentMessage,
+  messages: readonly AgentMessage[],
+  attempts: readonly SendAttemptRecord[],
+  snapshot: NativeControlSnapshot,
+  now: number,
+): void {
+  if (!proposed.id.startsWith('chief-result:') || !proposed.taskId ||
+      proposed.id !== `chief-result:${proposed.taskId}:ack` &&
+      proposed.id !== `chief-result:${proposed.taskId}:final`) {
+    throw new Error('Developer return message identity invalid');
+  }
+  const original = messages.find(item => item.id === `chief-dispatch:${proposed.taskId}`);
+  if (!original || original.fromRole !== 'chief_engineer' ||
+      original.recipientConversationKeys?.length !== 1) {
+    throw new Error('Developer return has no valid original dispatch');
+  }
+  const expectedConversation = original.recipientConversationKeys[0];
+  const authorizedAttempts = new Set(original.attemptIds);
+  for (const attempt of attempts) {
+    if (!authorizedAttempts.has(attempt.attemptId) ||
+        attempt.messageId !== original.id || attempt.conversationKey !== expectedConversation ||
+        attempt.state !== 'reply-observed' || !attempt.replyTextTail?.startsWith(RESULT_PREFIX)) continue;
+    try {
+      const developerResult = parseDeveloperResult(attempt.replyTextTail, proposed.taskId);
+      if (!developerResult) continue;
+      const expected = buildChiefResultMessage(original, developerResult, snapshot, now);
+      assertSameFrozenMessage(expected, proposed);
+      return;
+    } catch {
+      // A mismatched, noncanonical or incomplete result is not an ACK.
+    }
+  }
+  throw new Error('Developer return has no correlated reply-observed evidence');
 }
 
 /** Exact identity/content comparison is the durable idempotency rule: never

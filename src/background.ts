@@ -11,7 +11,7 @@ import { defaultCompletionPolicy, DEFAULT_MAX_REVIEW_ROUNDS, normalizeTask } fro
 import { parseReviewResult } from './review';
 import { assertMessageDeliveryAvailable, buildSemanticMessagePrompt, createAgentMessage, planMessageDispatch } from './messageBus';
 import { planJointRoleCharterTargets } from './jointRoleInitialization';
-import { assertSameFrozenMessage, buildChiefResultMessage, buildVerifiedChiefDispatch, findVerifiedChiefTab, parseChiefDirective, parseDeveloperResult } from './jointChiefDispatch';
+import { assertCorrelatedDeveloperReturn, assertSameFrozenMessage, buildChiefResultMessage, buildVerifiedChiefDispatch, findVerifiedChiefTab, parseChiefDirective, parseDeveloperResult } from './jointChiefDispatch';
 import { planRoleCharterInitialization } from './roleCharterDelivery';
 import { createPortableManagerState, parsePortableManagerState, restorePortableAttempts, stringifyPortableManagerState } from './stateTransfer';
 import type { AttemptRecoveryObservation } from './recovery';
@@ -719,6 +719,10 @@ async function deliverPendingChiefResults(
     if (message.recipientConversationKeys?.length !== 1 ||
         message.recipientConversationKeys[0] !== chief.snapshot.conversationKey) continue;
     try {
+      // Never forward a restored/imported Chief-result message unless its exact
+      // content can be rederived from the original Developer's reply-observed
+      // ledger record. Browser/manager messages are not evidence authorities.
+      assertCorrelatedDeveloperReturn(message, state.messages, state.attempts, snapshot, Date.now());
       await dispatchToTab(chief.tabId, buildSemanticMessagePrompt(message), crypto.randomUUID(), undefined, message.id);
     } catch (error) {
       await reportIncident('chief-result-delivery-blocked', message.id, {
@@ -746,11 +750,16 @@ async function maybeIngestDeveloperResult(attemptId: string, tabId: number, chat
   if (!attempt || attempt.tabId !== tabId || attempt.state !== 'reply-observed' ||
       !attempt.messageId?.startsWith('chief-dispatch:')) return;
   const work = state.messages.find(item => item.id === attempt.messageId);
-  if (!work?.taskId) return;
+  if (!work?.taskId || !work.attemptIds.includes(attemptId) ||
+      work.recipientConversationKeys?.length !== 1 ||
+      work.recipientConversationKeys[0] !== attempt.conversationKey ||
+      chat.conversationKey !== attempt.conversationKey) return;
   const result = parseDeveloperResult(chat.latestAssistantText, work.taskId);
   if (!result) return;
   const snapshot = await readNativeControlSnapshot();
-  await persistJointMessage(buildChiefResultMessage(work, result, snapshot, Date.now()));
+  const returnMessage = buildChiefResultMessage(work, result, snapshot, Date.now());
+  assertCorrelatedDeveloperReturn(returnMessage, state.messages, state.attempts, snapshot, Date.now());
+  await persistJointMessage(returnMessage);
   await deliverPendingChiefResults(snapshot, await managedTabs());
 }
 

@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import {
-  assertSameFrozenMessage, buildChiefResultMessage, buildVerifiedChiefDispatch,
+  assertCorrelatedDeveloperReturn, assertSameFrozenMessage, buildChiefResultMessage, buildVerifiedChiefDispatch,
   findVerifiedChiefTab, parseChiefDirective, parseDeveloperResult,
 } from '../src/jointChiefDispatch';
 import type { NativeControlSnapshot } from '../src/nativeControlLegacy';
@@ -82,4 +82,32 @@ it('correlates explicit Developer ACK and final result to the exact original Chi
   expect(() => parseDeveloperResult('HIVE06_DEVELOPER_RESULT_V1\n' + JSON.stringify({
     ...result, dispatchId: 'OTHER-TASK',
   }), 'HIVE-0000123')).toThrow(/identity/);
+});
+
+it('requires a correlated Developer reply before forwarding a restored Chief result', () => {
+  const f = fixture();
+  const original = buildVerifiedChiefDispatch(parseChiefDirective(requestText)!, 101, f.chat, f.control, now);
+  original.attemptIds = ['attempt-1'];
+  const raw = 'HIVE06_DEVELOPER_RESULT_V1\n' + JSON.stringify({
+    dispatchId: 'HIVE-0000123', status: 'acknowledged', summary: 'Received', evidence: [],
+  });
+  const parsed = parseDeveloperResult(raw, original.taskId!)!;
+  const message = buildChiefResultMessage(original, parsed, f.control, now);
+  const attempt = {
+    attemptId: 'attempt-1', batchId: 'batch', tabId: 777, conversationKey: developer,
+    contentEpoch: 'epoch', messageId: original.id, state: 'reply-observed' as const,
+    replyTextTail: raw, textLength: 1, baselineAssistantMessageCount: 0,
+    createdAt: now, updatedAt: now,
+  };
+  expect(() => assertCorrelatedDeveloperReturn(message, [original, message], [attempt], f.control, now)).not.toThrow();
+  expect(() => assertCorrelatedDeveloperReturn({ ...message, content: 'forged result' },
+    [original, message], [attempt], f.control, now)).toThrow(/correlated/);
+  expect(() => assertCorrelatedDeveloperReturn(message, [original, message],
+    [{ ...attempt, state: 'acknowledged' }], f.control, now)).toThrow(/correlated/);
+  expect(() => assertCorrelatedDeveloperReturn(message, [original, message],
+    [{ ...attempt, conversationKey: 'conversation:other' }], f.control, now)).toThrow(/correlated/);
+  expect(() => assertCorrelatedDeveloperReturn(message, [original, message],
+    [{ ...attempt, messageId: 'another-dispatch' }], f.control, now)).toThrow(/correlated/);
+  expect(() => assertCorrelatedDeveloperReturn(message, [original, message],
+    [{ ...attempt, replyTextTail: 'noncanonical' }], f.control, now)).toThrow(/correlated/);
 });
