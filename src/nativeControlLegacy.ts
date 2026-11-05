@@ -125,7 +125,13 @@ export interface ControlProjectGroupView {
   members: { projectId: string; developerSlotId: string }[];
 }
 
+/** Authenticated Kernel projection. Not proof of a live Chief browser tab. */
+export interface ControlRoleCharterView {
+  version: string; digest: string; groupId: string; content: string;
+  roles: { identity: string; role: string; projectId: string | null; slotId: string | null; conversationKey: string }[];
+}
 export interface NativeControlSnapshot {
+  roleCharter?: ControlRoleCharterView;
   projectGroups?: ControlProjectGroupView[];
   protocolVersion: 2;
   projects: ControlProjectView[];
@@ -189,6 +195,32 @@ export function parseNativeControlSnapshot(value: unknown): NativeControlSnapsho
       }),
     };
   });
+  let roleCharter: ControlRoleCharterView | undefined;
+  if (root.roleCharter !== undefined && root.roleCharter !== null) {
+    const charter = record(root.roleCharter, 'roleCharter');
+    const roles = arrayField(charter.roles, 'roleCharter.roles').map(value => {
+      const role = record(value, 'roleCharter.role');
+      return {
+        identity: stringField(role.identity, 'roleCharter.identity'),
+        role: stringField(role.role, 'roleCharter.role'),
+        projectId: role.projectId === null ? null : stringField(role.projectId, 'roleCharter.projectId'),
+        slotId: role.slotId === null ? null : stringField(role.slotId, 'roleCharter.slotId'),
+        conversationKey: stringField(role.conversationKey, 'roleCharter.conversationKey'),
+      };
+    });
+    const digest = stringField(charter.digest, 'roleCharter.digest');
+    if (!/^[a-f0-9]{64}$/.test(digest) || roles.length !== 3
+      || new Set(roles.map(role => role.identity)).size !== 3
+      || roles.filter(role => role.role === 'developer').length !== 2
+      || roles.filter(role => role.role === 'chief_engineer').length !== 1) {
+      throw new Error('Invalid Kernel role charter projection');
+    }
+    roleCharter = {
+      version: stringField(charter.version, 'roleCharter.version'), digest,
+      groupId: stringField(charter.groupId, 'roleCharter.groupId'),
+      content: stringField(charter.content, 'roleCharter.content'), roles,
+    };
+  }
   const projects = arrayField(root.projects, 'projects').map((entry, index) => {
     const item = record(entry, `projects[${index}]`);
     return {
@@ -304,7 +336,7 @@ export function parseNativeControlSnapshot(value: unknown): NativeControlSnapsho
     if (item.projectId !== undefined) event.projectId = stringField(item.projectId, 'event.projectId');
     return event;
   });
-  return { protocolVersion: 2, projectGroups, projects, agents, resources, leases, changeRequests, reviews, mergeQueue, workerRequests, browserRuntime, events };
+  return { protocolVersion: 2, ...(roleCharter ? { roleCharter } : {}), projectGroups, projects, agents, resources, leases, changeRequests, reviews, mergeQueue, workerRequests, browserRuntime, events };
 }
 
 export async function readNativeControlSnapshot(): Promise<NativeControlSnapshot> {

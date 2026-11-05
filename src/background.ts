@@ -10,6 +10,8 @@ import { applyReviewRemediation } from './reviewLoop';
 import { defaultCompletionPolicy, DEFAULT_MAX_REVIEW_ROUNDS, normalizeTask } from './taskPolicy';
 import { parseReviewResult } from './review';
 import { assertMessageDeliveryAvailable, buildSemanticMessagePrompt, createAgentMessage, planMessageDispatch } from './messageBus';
+import { planJointRoleCharterTargets } from './jointRoleInitialization';
+import { planRoleCharterInitialization } from './roleCharterDelivery';
 import { createPortableManagerState, parsePortableManagerState, restorePortableAttempts, stringifyPortableManagerState } from './stateTransfer';
 import type { AttemptRecoveryObservation } from './recovery';
 import { applyRestartRecovery, restartRecoveryCandidates } from './restartRecoveryPolicy';
@@ -344,6 +346,11 @@ async function createTask(input: CreateTaskInput): Promise<AgentTask> {
 async function createMessage(input: import('./contracts').CreateAgentMessageInput): Promise<AgentMessage> {
   return serializeStateMutation(async () => {
     const state = await readWorkState();
+    // Manager-supplied fromRole is presentation data, not the Chief's identity.
+    // Protected dispatch types require a trusted Kernel authority path.
+    if (['chief_engineer', 'role-charter'].includes(input.fromRole.trim().toLowerCase())) {
+      throw new Error('Chief or Role Charter sender requires Kernel-authorized dispatch');
+    }
     const message = createAgentMessage(input, crypto.randomUUID());
     const messages = [...state.messages, message];
     await replaceWorkState(state, { messages });
@@ -595,6 +602,53 @@ async function syncWorkerRequestMessages(snapshot: import('./nativeControl').Nat
   });
 }
 
+/**
+ * Activate only an immutable Role Charter that has been imported by the
+ * authenticated Kernel admin path. Reuse manager_messages + attempts + existing
+ * Native BrowserOperation; no separate sender or TaskStore.
+ *
+ * Chief has no proven managed browser lease in the present deployment, so it is
+ * kept PENDING_RUNTIME instead of inventing a Tab/identity.
+ */
+async function deliverJointRoleCharters(
+  snapshot: import('./nativeControl').NativeControlSnapshot,
+  tabs: readonly ManagedTab[],
+): Promise<void> {
+  const targets = planJointRoleCharterTargets(snapshot, tabs, Date.now()).filter(target => target.reason === 'READY');
+  if (targets.length === 0) return;
+  const dispatchIds = await serializeStateMutation(async () => {
+    const state = await readWorkState();
+    const messages = [...state.messages];
+    const eligible: string[] = [];
+    for (const target of targets) {
+      const plan = planRoleCharterInitialization(target.recipient, messages, state.attempts, target.runtime, Date.now());
+      if (plan.message) messages.push(plan.message);
+      if (plan.state !== 'prepared') continue;
+      const id = plan.message?.id ?? messages.find(message =>
+        message.id.startsWith('role-charter:') &&
+        message.recipientConversationKeys?.length === 1 &&
+        message.recipientConversationKeys[0] === target.recipient.conversationKey &&
+        message.content === target.recipient.content)?.id;
+      // A prepared/orphan attempt is unresolved even if the message lost its
+      // attemptIds during a crash window. Never automatically replay it.
+      if (id && !state.attempts.some(attempt => attempt.messageId === id)) {
+        const message = messages.find(item => item.id === id);
+        if (message && message.attemptIds.length === 0) eligible.push(id);
+      }
+    }
+    if (messages.length !== state.messages.length) await replaceWorkState(state, { messages });
+    return eligible;
+  });
+  for (const id of dispatchIds) {
+    try { await dispatchMessage(id); }
+    catch (error) {
+      await reportIncident('role-charter-dispatch-blocked', id, {
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
 async function deliverWorkerRequestMessages(snapshot: import('./nativeControl').NativeControlSnapshot): Promise<void> {
   await syncWorkerRequestMessages(snapshot);
   const openIds = new Set([
@@ -672,6 +726,7 @@ async function reconcileAgentFleetOnce(): Promise<void> {
         await reportIncident('fleet-action-failed', action.slotId, { kind: action.kind, error: error instanceof Error ? error.message : String(error) });
       }
     }
+    await deliverJointRoleCharters(snapshot, currentTabs);
     await deliverWorkerRequestMessages(snapshot);
     // Fleet bindings may become usable only after the content event that triggered this reconcile.
     // Give Auto Supervisor a second scheduling opportunity against the reconciled binding state.

@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { ControlPlane } from './controlPlane';
 import { OrganizationRpcController } from './organizationRpc';
+import { JointRoleCharterAuthority, JOINT_ROLE_CHARTER_CONTENT } from './jointRoleCharter';
 import { enumParam, numberParam, objectArrayParam, objectParam, record, stringParam } from './rpcParams';
 import type {
   AcquireLeaseInput,
@@ -125,9 +126,22 @@ export class RpcRouter {
   private dispatch(request: RpcRequest): unknown {
     const params = request.params ? record(request.params) : {};
     switch (request.method) {
+      case 'role-charter.import-approved': {
+        // Existing operator/admin RPC authority, not browser prompts or a client-supplied APPROVED flag.
+        this.requireAdmin(request);
+        const contents = params.sourceContents;
+        if (!Array.isArray(contents) || contents.length !== 2 || !contents.every((v): v is string => typeof v === 'string')) {
+          throw new Error('Exactly two pinned approved-source contents are required');
+        }
+        const digest = new JointRoleCharterAuthority(this.plane.database).importApproved(JOINT_ROLE_CHARTER_CONTENT, contents);
+        return { digest, status: 'IMPORTED' };
+      }
+      case 'role-charter.snapshot':
+        this.requireBrowserOrAdmin(request);
+        return new JointRoleCharterAuthority(this.plane.database).snapshot() ?? { status: 'NOT_IMPORTED' };
       case 'control.snapshot':
         this.requireBrowserOrAdmin(request);
-        const changeRequests = this.plane.changes.listChangeRequests().slice(-200); return { protocolVersion: 2, projectGroups: this.plane.listProjectGroups(), projects: this.plane.listProjects(), agents: this.plane.listAgentSlots(), resources: this.plane.listResources(), leases: this.plane.listLeases(), claims: this.plane.evidence.listClaims().slice(-200), artifacts: this.plane.evidence.listArtifacts().slice(-200), verifications: this.plane.evidence.listVerifications().slice(-200), changeRequests, reviews: changeRequests.flatMap((item) => this.plane.changes.listReviews(item.id)).slice(-200), mergeQueue: this.plane.changes.listQueue().slice(-200), workerRequests: this.plane.requests.list().slice(-200), promotions: this.plane.promotions.list().slice(-200), browserRuntime: this.plane.listBrowserRuntime(), events: this.plane.listEvents(undefined, 0, 200) };
+        const changeRequests = this.plane.changes.listChangeRequests().slice(-200); return { protocolVersion: 2, roleCharter: new JointRoleCharterAuthority(this.plane.database).snapshot(), projectGroups: this.plane.listProjectGroups(), projects: this.plane.listProjects(), agents: this.plane.listAgentSlots(), resources: this.plane.listResources(), leases: this.plane.listLeases(), claims: this.plane.evidence.listClaims().slice(-200), artifacts: this.plane.evidence.listArtifacts().slice(-200), verifications: this.plane.evidence.listVerifications().slice(-200), changeRequests, reviews: changeRequests.flatMap((item) => this.plane.changes.listReviews(item.id)).slice(-200), mergeQueue: this.plane.changes.listQueue().slice(-200), workerRequests: this.plane.requests.list().slice(-200), promotions: this.plane.promotions.list().slice(-200), browserRuntime: this.plane.listBrowserRuntime(), events: this.plane.listEvents(undefined, 0, 200) };
       case 'browser.report': return this.browserReport(request, params);
       case 'browser.status': this.requireBrowserOrAdmin(request); return this.plane.listBrowserRuntime();
       case 'project-group.upsert': {
