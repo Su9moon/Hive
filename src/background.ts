@@ -11,6 +11,7 @@ import { defaultCompletionPolicy, DEFAULT_MAX_REVIEW_ROUNDS, normalizeTask } fro
 import { parseReviewResult } from './review';
 import { assertMessageDeliveryAvailable, buildSemanticMessagePrompt, createAgentMessage, planMessageDispatch } from './messageBus';
 import { planJointRoleCharterTargets } from './jointRoleInitialization';
+import { assertSameFrozenMessage, buildChiefResultMessage, buildVerifiedChiefDispatch, findVerifiedChiefTab, parseChiefDirective, parseDeveloperResult } from './jointChiefDispatch';
 import { planRoleCharterInitialization } from './roleCharterDelivery';
 import { createPortableManagerState, parsePortableManagerState, restorePortableAttempts, stringifyPortableManagerState } from './stateTransfer';
 import type { AttemptRecoveryObservation } from './recovery';
@@ -649,6 +650,91 @@ async function deliverJointRoleCharters(
   }
 }
 
+/** Reuse existing Kernel manager_messages/attempts, keeping exact frozen identity.
+ * An orphan Attempt must never be followed by an automatic new send.
+ */
+async function persistJointMessage(message: AgentMessage): Promise<void> {
+  await serializeStateMutation(async () => {
+    const state = await readWorkState();
+    const old = state.messages.find(item => item.id === message.id);
+    if (old) { assertSameFrozenMessage(old, message); return; }
+    if (state.attempts.some(attempt => attempt.messageId === message.id)) {
+      throw new Error('Orphan delivery attempt requires explicit reconciliation');
+    }
+    await replaceWorkState(state, { messages: [...state.messages, message] });
+  });
+}
+
+async function deliverPendingChiefWork(
+  snapshot: import('./nativeControl').NativeControlSnapshot,
+  tabs: readonly ManagedTab[],
+): Promise<void> {
+  const targets = planJointRoleCharterTargets(snapshot, tabs, Date.now()).filter(target => target.reason === 'READY');
+  const state = await workState();
+  for (const message of state.messages) {
+    if (!message.id.startsWith('chief-dispatch:') || message.attemptIds.length !== 0 ||
+        state.attempts.some(attempt => attempt.messageId === message.id)) continue;
+    const destination = message.recipientConversationKeys;
+    if (destination?.length !== 1 ||
+        !targets.some(target => target.recipient.conversationKey === destination[0] &&
+          target.recipient.project === message.project)) continue;
+    try { await dispatchMessage(message.id); }
+    catch (error) {
+      await reportIncident('chief-work-delivery-blocked', message.id, {
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
+async function deliverPendingChiefResults(
+  snapshot: import('./nativeControl').NativeControlSnapshot,
+  tabs: readonly ManagedTab[],
+): Promise<void> {
+  const chief = findVerifiedChiefTab(snapshot, tabs, Date.now());
+  if (!chief) return; // No synthesized Chief tab/lease, no direct raw-tab fallback.
+  const state = await workState();
+  for (const message of state.messages) {
+    if (!message.id.startsWith('chief-result:') || message.attemptIds.length !== 0 ||
+        state.attempts.some(attempt => attempt.messageId === message.id)) continue;
+    if (message.recipientConversationKeys?.length !== 1 ||
+        message.recipientConversationKeys[0] !== chief.snapshot.conversationKey) continue;
+    try {
+      await dispatchToTab(chief.tabId, buildSemanticMessagePrompt(message), crypto.randomUUID(), undefined, message.id);
+    } catch (error) {
+      await reportIncident('chief-result-delivery-blocked', message.id, {
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
+async function maybeIngestChiefDirective(tabId: number, chat: ChatSnapshot): Promise<void> {
+  if (chat.status !== 'idle' || !chat.latestAssistantText.startsWith('HIVE06_CHIEF_DISPATCH_V1\n')) return;
+  const directive = parseChiefDirective(chat.latestAssistantText);
+  if (!directive) return;
+  const snapshot = await readNativeControlSnapshot();
+  const message = buildVerifiedChiefDispatch(directive, tabId, chat, snapshot, Date.now());
+  await persistJointMessage(message);
+  const tabs = await managedTabs();
+  await deliverPendingChiefWork(snapshot, tabs);
+}
+
+async function maybeIngestDeveloperResult(attemptId: string, tabId: number, chat: ChatSnapshot): Promise<void> {
+  if (!chat.latestAssistantText.startsWith('HIVE06_DEVELOPER_RESULT_V1\n')) return;
+  const state = await workState();
+  const attempt = state.attempts.find(item => item.attemptId === attemptId);
+  if (!attempt || attempt.tabId !== tabId || attempt.state !== 'reply-observed' ||
+      !attempt.messageId?.startsWith('chief-dispatch:')) return;
+  const work = state.messages.find(item => item.id === attempt.messageId);
+  if (!work?.taskId) return;
+  const result = parseDeveloperResult(chat.latestAssistantText, work.taskId);
+  if (!result) return;
+  const snapshot = await readNativeControlSnapshot();
+  await persistJointMessage(buildChiefResultMessage(work, result, snapshot, Date.now()));
+  await deliverPendingChiefResults(snapshot, await managedTabs());
+}
+
 async function deliverWorkerRequestMessages(snapshot: import('./nativeControl').NativeControlSnapshot): Promise<void> {
   await syncWorkerRequestMessages(snapshot);
   const openIds = new Set([
@@ -727,6 +813,8 @@ async function reconcileAgentFleetOnce(): Promise<void> {
       }
     }
     await deliverJointRoleCharters(snapshot, currentTabs);
+    await deliverPendingChiefWork(snapshot, currentTabs);
+    await deliverPendingChiefResults(snapshot, currentTabs);
     await deliverWorkerRequestMessages(snapshot);
     // Fleet bindings may become usable only after the content event that triggered this reconcile.
     // Give Auto Supervisor a second scheduling opportunity against the reconciled binding state.
@@ -762,6 +850,11 @@ chrome.runtime.onMessage.addListener((message: ManagerRequest | RuntimeNotice, s
   if (message.type === 'content:changed') {
     const tabId = sender.tab?.id;
     if (tabId === undefined || !contentRuntimeFence.observe(tabId, message.observation)) return false;
+    // The content-script sender supplies the actual tabId; a role string never authorizes a Chief.
+    void maybeIngestChiefDirective(tabId, message.snapshot).catch((error) =>
+      reportIncident('chief-dispatch-rejected', String(tabId), {
+        reason: error instanceof Error ? error.message : String(error),
+      }));
     void reportSlotRuntime(tabId, message.observation, message.snapshot, bindingFor)
       .then(async (binding) => { await reconcileGenerationReservation(tabId, binding, message.snapshot); scheduleFleetReconcile(0); await bootstrapPendingConversationRollover(tabId, binding, message.snapshot, (id, text) => dispatchToTab(id, text, crypto.randomUUID())); const bootstrapAttempt = await bootstrapReplyAttemptId(binding, message.snapshot); if (bootstrapAttempt) { const persisted = await markReplyObserved(bootstrapAttempt, message.observation.contentEpoch, message.snapshot, tabId); if (persisted) await completeConversationRolloverForReply(binding, bootstrapAttempt); } })
       .catch((error) => reportIncident('agent-runtime-report-failed', String(tabId), { error: error instanceof Error ? error.message : String(error), contentEpoch: message.observation.contentEpoch }));
@@ -781,6 +874,7 @@ chrome.runtime.onMessage.addListener((message: ManagerRequest | RuntimeNotice, s
       .then(async (binding) => { await reconcileGenerationReservation(tabId, binding, message.snapshot); const persisted = await markReplyObserved(message.attemptId, message.observation.contentEpoch, message.snapshot, tabId); if (persisted) await completeConversationRolloverForReply(binding, message.attemptId); return persisted; })
       .then(async (persisted) => {
         if (persisted) {
+          await maybeIngestDeveloperResult(message.attemptId, tabId, message.snapshot);
           await notifyManagerChanged();
           kickSupervisor();
         }
